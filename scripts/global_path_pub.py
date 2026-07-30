@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
+
 import rospy
 import rospkg
 from math import cos,sin,pi,sqrt,pow
@@ -20,7 +22,11 @@ class read_path_pub :
 
         rospack=rospkg.RosPack()
         pkg_path=rospack.get_path('beginner_tutorials')
-        full_path=pkg_path+'/path'+'/kcity.txt'
+        path_file = rospy.get_param('~path_file', 'ajou_mini_comp_global_path.txt')
+        full_path = os.path.join(pkg_path, 'path', path_file)
+        if not os.path.isfile(full_path):
+            rospy.logwarn("Path file '%s' not found; falling back to kcity.txt", full_path)
+            full_path = os.path.join(pkg_path, 'path', 'kcity.txt')
         self.f=open(full_path,'r')
         lines=self.f.readlines()
 
@@ -30,6 +36,8 @@ class read_path_pub :
             read_pose=PoseStamped()
             read_pose.pose.position.x=float(tmp[0])
             read_pose.pose.position.y=float(tmp[1])
+            if len(tmp) > 2:
+                read_pose.pose.position.z=float(tmp[2])
             read_pose.pose.orientation.w=1
             self.global_path_msg.poses.append(read_pose)
         
@@ -49,5 +57,3 @@ if __name__ == '__main__':
         test_track=read_path_pub()
     except rospy.ROSInterruptException:
         pass
-
-

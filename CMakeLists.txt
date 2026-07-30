@@ -8,8 +8,11 @@ project(beginner_tutorials)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  geometry_msgs
+  nav_msgs
   rospy
   std_msgs
+  morai_msgs
   message_generation
 )
 
@@ -104,7 +107,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES beginner_tutorials
-  CATKIN_DEPENDS message_runtime
+  CATKIN_DEPENDS geometry_msgs nav_msgs rospy std_msgs morai_msgs message_runtime
 #  DEPENDS system_lib
 )
 
@@ -158,10 +161,21 @@ include_directories(
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-# catkin_install_python(PROGRAMS
-#   scripts/my_python_script
-#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+catkin_install_python(PROGRAMS
+  scripts/global_path_pub.py
+  scripts/gpsimu_parser.py
+  scripts/local_path_pub.py
+  scripts/lattice_planner.py
+  scripts/mission_planner.py
+  scripts/pure_pursuit_pid_velocity_planning.py
+  scripts/mgeo_pub.py
+  scripts/tf_pub.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY launch config path rviz
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html

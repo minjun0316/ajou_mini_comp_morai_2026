@@ -20,6 +20,10 @@ class latticePlanner:
         rospy.Subscriber("/Object_topic", ObjectStatusList, self.object_callback)
 
         self.lattice_path_pub = rospy.Publisher('/lattice_path', Path, queue_size = 1)
+        self.candidate_pubs = [
+            rospy.Publisher('/lattice_path_{}'.format(i + 1), Path, queue_size=1)
+            for i in range(7)
+        ]
 
         self.is_path = False
         self.is_status = False
@@ -31,10 +35,12 @@ class latticePlanner:
             if self.is_path and self.is_status and self.is_obj:
                 if self.checkObject(self.local_path, self.object_data):
                     lattice_path = self.latticePlanner(self.local_path, self.status_msg)
-                    lattice_path_index = self.collision_check(self.object_data, lattice_path)
-
-                    # (7)  lattice 경로 메세지 Publish
-                    self.lattice_path_pub.publish(lattice_path[lattice_path_index])
+                    if lattice_path:
+                        lattice_path_index = self.collision_check(self.object_data, lattice_path)
+                        self.lattice_path_pub.publish(lattice_path[lattice_path_index])
+                    else:
+                        rospy.logwarn_throttle(1.0, "No lattice candidate; using local path")
+                        self.lattice_path_pub.publish(self.local_path)
                 else:
                     self.lattice_path_pub.publish(self.local_path)
             rate.sleep()
@@ -42,10 +48,13 @@ class latticePlanner:
     def checkObject(self, ref_path, object_data):
 
         is_crash = False
-        for obstacle in object_data.obstacle_list:
+        objects = (list(object_data.obstacle_list) + list(object_data.npc_list)
+                   + list(object_data.pedestrian_list))
+        for obstacle in objects:
+            clearance = 1.2 + max(0.5, obstacle.size.y * 0.5)
             for path in ref_path.poses:  
                 dis = sqrt(pow(path.pose.position.x - obstacle.position.x, 2) + pow(path.pose.position.y - obstacle.position.y, 2))                
-                if dis < 2.35: # 장애물의 좌표값이 지역 경로 상의 좌표값과의 직선거리가 2.35 미만일때 충돌이라 판단.
+                if dis < clearance:
                     is_crash = True
                     break
 
@@ -55,14 +64,19 @@ class latticePlanner:
         #TODO: (6) 생성된 충돌회피 경로 중 낮은 비용의 경로 선택
         
         selected_lane = -1        
-        lane_weight = [3, 2, 1, 1, 2, 3] #reference path 
+        center = len(out_path) // 2
+        lane_weight = [abs(i - center) for i in range(len(out_path))]
         
-        for obstacle in object_data.obstacle_list:                        
+        objects = (list(object_data.obstacle_list) + list(object_data.npc_list)
+                   + list(object_data.pedestrian_list))
+        for obstacle in objects:
+            clearance = 1.0 + max(0.5, obstacle.size.y * 0.5)
             for path_num in range(len(out_path)) :                    
                 for path_pos in out_path[path_num].poses :                                
                     dis = sqrt(pow(obstacle.position.x - path_pos.pose.position.x, 2) + pow(obstacle.position.y - path_pos.pose.position.y, 2))
-                    if dis < 1.5:
+                    if dis < clearance:
                         lane_weight[path_num] = lane_weight[path_num] + 100
+                        break
 
         selected_lane = lane_weight.index(min(lane_weight))     
 
@@ -92,7 +106,7 @@ class latticePlanner:
         if look_distance < 20 :
             look_distance = 20                    
 
-        if len(ref_path.poses) > look_distance :  
+        if len(ref_path.poses) > look_distance * 2:
             #TODO: (3) 좌표 변환 행렬 생성
             """
             # 좌표 변환 행렬을 만듭니다.
@@ -120,7 +134,7 @@ class latticePlanner:
             local_end_point = det_trans_matrix.dot(world_end_point)
             world_ego_vehicle_position = np.array([[vehicle_pose_x], [vehicle_pose_y], [1]])
             local_ego_vehicle_position = det_trans_matrix.dot(world_ego_vehicle_position)
-            lane_off_set = [-3.0, -1.75, -1, 1, 1.75, 3.0]
+            lane_off_set = [-3.0, -1.75, -1.0, 0.0, 1.0, 1.75, 3.0]
             local_lattice_points = []
             
             for i in range(len(lane_off_set)):
@@ -141,14 +155,17 @@ class latticePlanner:
                 y = []
                 x_interval = 0.5
                 xs = 0
-                xf = end_point[0]
+                xf = float(end_point[0])
                 ps = local_ego_vehicle_position[1][0]
 
                 pf = end_point[1]
-                x_num = xf / x_interval
+                x_num = int(max(0.0, xf / x_interval))
 
-                for i in range(xs,int(x_num)) : 
+                for i in range(xs, x_num):
                     x.append(i*x_interval)
+
+                if xf <= 0.1:
+                    continue
                 
                 a = [0.0, 0.0, 0.0, 0.0]
                 a[0] = ps
@@ -175,7 +192,8 @@ class latticePlanner:
                     read_pose.pose.orientation.w = 1
                     lattice_path.poses.append(read_pose)
 
-                out_path.append(lattice_path)
+                if lattice_path.poses:
+                    out_path.append(lattice_path)
 
             #Add_point            
             add_point_size = min(int(vehicle_velocity * 2), len(ref_path.poses) )           
@@ -186,7 +204,7 @@ class latticePlanner:
                     tmp_translation = [ref_path.poses[i].pose.position.x,ref_path.poses[i].pose.position.y]
                     tmp_t = np.array([[cos(tmp_theta), -sin(tmp_theta), tmp_translation[0]], [sin(tmp_theta), cos(tmp_theta), tmp_translation[1]], [0, 0, 1]])
 
-                    for lane_num in range(len(lane_off_set)) :
+                    for lane_num in range(min(len(lane_off_set), len(out_path))):
                         local_result = np.array([[0], [lane_off_set[lane_num]], [1]])
                         global_result = tmp_t.dot(local_result)
 
@@ -206,9 +224,8 @@ class latticePlanner:
             # Rviz 창에서 시각화 하도록 합니다.
 
             '''
-            for i in range(len(out_path)):          
-                globals()['lattice_pub_{}'.format(i+1)] = rospy.Publisher('/lattice_path_{}'.format(i+1),Path,queue_size=1)
-                globals()['lattice_pub_{}'.format(i+1)].publish(out_path[i])
+            for i, path in enumerate(out_path):
+                self.candidate_pubs[i].publish(path)
         
         return out_path
 
@@ -217,4 +234,3 @@ if __name__ == '__main__':
         latticePlanner()
     except rospy.ROSInterruptException:
         pass
-

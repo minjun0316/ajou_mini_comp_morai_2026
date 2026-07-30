@@ -9,6 +9,7 @@ from math import cos,sin,pi,sqrt,pow,atan2
 from geometry_msgs.msg import Point,PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry,Path
 from morai_msgs.msg import CtrlCmd,EgoVehicleStatus
+from std_msgs.msg import Float32
 import numpy as np
 import tf
 from tf.transformations import euler_from_quaternion,quaternion_from_euler
@@ -39,6 +40,7 @@ class pure_pursuit :
         
         rospy.Subscriber("/odom", Odometry, self.odom_callback)
         rospy.Subscriber("/Ego_topic",EgoVehicleStatus, self.status_callback) 
+        rospy.Subscriber("/mission_target_speed", Float32, self.mission_speed_callback)
         self.ctrl_cmd_pub = rospy.Publisher('ctrl_cmd',CtrlCmd, queue_size=1)
 
         self.ctrl_cmd_msg = CtrlCmd()
@@ -60,6 +62,7 @@ class pure_pursuit :
         self.max_lfd = 30
         self.lfd_gain = 0.78
         self.target_velocity = 40
+        self.mission_target_velocity = float('inf')
 
         self.pid = pidControl()
         self.vel_planning = velocityPlanning(self.target_velocity/3.6, 0.15)
@@ -77,27 +80,27 @@ class pure_pursuit :
                 prev_time = time.time()
 
                 self.current_waypoint = self.get_current_waypoint(self.status_msg,self.global_path)
-                self.target_velocity = self.velocity_list[self.current_waypoint]*3.6
+                path_target_velocity = self.velocity_list[self.current_waypoint]*3.6
+                self.target_velocity = min(path_target_velocity, self.mission_target_velocity)
                 
 
                 steering = self.calc_pure_pursuit()
                 if self.is_look_forward_point :
-                    self.ctrl_cmd_msg.steering = steering
+                    self.ctrl_cmd_msg.front_steer = steering
                 else : 
-                    rospy.loginfo("no found forward point")
-                    self.ctrl_cmd_msg.steering = 0.0
+                    rospy.loginfo_throttle(1.0, "no forward point")
+                    self.ctrl_cmd_msg.front_steer = 0.0
                 
                 output = self.pid.pid(self.target_velocity,self.status_msg.velocity.x*3.6)
 
                 if output > 0.0:
-                    self.ctrl_cmd_msg.accel = output
+                    self.ctrl_cmd_msg.accel = min(output, 1.0)
                     self.ctrl_cmd_msg.brake = 0.0
                 else:
                     self.ctrl_cmd_msg.accel = 0.0
-                    self.ctrl_cmd_msg.brake = -output
+                    self.ctrl_cmd_msg.brake = min(-output, 1.0)
 
                 #TODO: (8) 제어입력 메세지 Publish
-                print(steering)
                 self.ctrl_cmd_pub.publish(self.ctrl_cmd_msg)
                 
             rate.sleep()
@@ -120,6 +123,9 @@ class pure_pursuit :
     def global_path_callback(self,msg):
         self.global_path = msg
         self.is_global_path = True
+
+    def mission_speed_callback(self, msg):
+        self.mission_target_velocity = max(0.0, float(msg.data))
     
     def get_current_waypoint(self,ego_status,global_path):
         min_dist = float('inf')        
@@ -158,6 +164,7 @@ class pure_pursuit :
 
         det_trans_matrix = np.linalg.inv(trans_matrix)
 
+        local_path_point = None
         for num,i in enumerate(self.path.poses) :
             path_point=i.pose.position
 
@@ -172,6 +179,8 @@ class pure_pursuit :
                     break
         
         #TODO: (4) Steering 각도 계산
+        if not self.is_look_forward_point or local_path_point is None:
+            return 0.0
         theta = atan2(local_path_point[1],local_path_point[0])
         steering = atan2((2*self.vehicle_length*sin(theta)),self.lfd)
 
