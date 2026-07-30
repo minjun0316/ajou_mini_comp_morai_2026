@@ -9,30 +9,38 @@ from math import cos,sin,pi,sqrt,pow,atan2
 from geometry_msgs.msg import Point,PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry,Path
 from morai_msgs.msg import CtrlCmd,EgoVehicleStatus
+from std_msgs.msg import Float32
 import numpy as np
 import tf
 from tf.transformations import euler_from_quaternion,quaternion_from_euler
 
-# Node execution order
+# advanced_purepursuit 은 차량의 차량의 종 횡 방향 제어 예제입니다.
+# Purpusuit 알고리즘의 Look Ahead Distance 값을 속도에 비례하여 가변 값으로 만들어 횡 방향 주행 성능을 올립니다.
+# 횡방향 제어 입력은 주행할 Local Path (지역경로) 와 차량의 상태 정보 Odometry 를 받아 차량을 제어 합니다.
+# 종방향 제어 입력은 목표 속도를 지정 한뒤 목표 속도에 도달하기 위한 Throttle control 을 합니다.
+# 종방향 제어 입력은 longlCmdType 1(Throttle control) 이용합니다.
 
-# 1. Declare subscriber, publisher
-# 2. Set the Look Ahead Distance value proportional to the speed
-# 3. Create a coordinate transformation matrix
-# 4. Calculate the steering angle
-# 5. Create a PID control
-# 6. Calculate the curvature of the road
-# 7. Curvature-based speed planning
-# 8. Publish the control input message
+# 노드 실행 순서 
+# 1. subscriber, publisher 선언
+# 2. 속도 비례 Look Ahead Distance 값 설정
+# 3. 좌표 변환 행렬 생성
+# 4. Steering 각도 계산
+# 5. PID 제어 생성
+# 6. 도로의 곡률 계산
+# 7. 곡률 기반 속도 계획
+# 8. 제어입력 메세지 Publish
 
 class pure_pursuit :
     def __init__(self):
         rospy.init_node('pure_pursuit', anonymous=True)
 
+        #TODO: (1) subscriber, publisher 선언
         rospy.Subscriber("/global_path", Path, self.global_path_callback)
         rospy.Subscriber("/lattice_path", Path, self.path_callback)
         
         rospy.Subscriber("/odom", Odometry, self.odom_callback)
         rospy.Subscriber("/Ego_topic",EgoVehicleStatus, self.status_callback) 
+        rospy.Subscriber("/mission_target_speed", Float32, self.mission_speed_callback)
         self.ctrl_cmd_pub = rospy.Publisher('ctrl_cmd',CtrlCmd, queue_size=1)
 
         self.ctrl_cmd_msg = CtrlCmd()
@@ -54,6 +62,7 @@ class pure_pursuit :
         self.max_lfd = 30
         self.lfd_gain = 0.78
         self.target_velocity = 40
+        self.mission_target_velocity = float('inf')
 
         self.pid = pidControl()
         self.vel_planning = velocityPlanning(self.target_velocity/3.6, 0.15)
@@ -71,26 +80,27 @@ class pure_pursuit :
                 prev_time = time.time()
 
                 self.current_waypoint = self.get_current_waypoint(self.status_msg,self.global_path)
-                self.target_velocity = self.velocity_list[self.current_waypoint]*3.6
+                path_target_velocity = self.velocity_list[self.current_waypoint]*3.6
+                self.target_velocity = min(path_target_velocity, self.mission_target_velocity)
                 
 
                 steering = self.calc_pure_pursuit()
                 if self.is_look_forward_point :
-                    self.ctrl_cmd_msg.steering = steering
+                    self.ctrl_cmd_msg.front_steer = steering
                 else : 
-                    rospy.loginfo("no found forward point")
-                    self.ctrl_cmd_msg.steering = 0.0
+                    rospy.loginfo_throttle(1.0, "no forward point")
+                    self.ctrl_cmd_msg.front_steer = 0.0
                 
                 output = self.pid.pid(self.target_velocity,self.status_msg.velocity.x*3.6)
 
                 if output > 0.0:
-                    self.ctrl_cmd_msg.accel = output
+                    self.ctrl_cmd_msg.accel = min(output, 1.0)
                     self.ctrl_cmd_msg.brake = 0.0
                 else:
                     self.ctrl_cmd_msg.accel = 0.0
-                    self.ctrl_cmd_msg.brake = -output
+                    self.ctrl_cmd_msg.brake = min(-output, 1.0)
 
-                print(steering)
+                #TODO: (8) 제어입력 메세지 Publish
                 self.ctrl_cmd_pub.publish(self.ctrl_cmd_msg)
                 
             rate.sleep()
@@ -113,6 +123,9 @@ class pure_pursuit :
     def global_path_callback(self,msg):
         self.global_path = msg
         self.is_global_path = True
+
+    def mission_speed_callback(self, msg):
+        self.mission_target_velocity = max(0.0, float(msg.data))
     
     def get_current_waypoint(self,ego_status,global_path):
         min_dist = float('inf')        
@@ -129,6 +142,7 @@ class pure_pursuit :
 
     def calc_pure_pursuit(self,):
 
+        #TODO: (2) 속도 비례 Look Ahead Distance 값 설정
         self.lfd = (self.status_msg.velocity.x) * self.lfd_gain
         
         if self.lfd < self.min_lfd : 
@@ -142,6 +156,7 @@ class pure_pursuit :
 
         translation = [vehicle_position.x, vehicle_position.y]
 
+        #TODO: (3) 좌표 변환 행렬 생성
         trans_matrix = np.array([
                 [cos(self.vehicle_yaw), -sin(self.vehicle_yaw),translation[0]],
                 [sin(self.vehicle_yaw),cos(self.vehicle_yaw),translation[1]],
@@ -149,6 +164,7 @@ class pure_pursuit :
 
         det_trans_matrix = np.linalg.inv(trans_matrix)
 
+        local_path_point = None
         for num,i in enumerate(self.path.poses) :
             path_point=i.pose.position
 
@@ -162,6 +178,9 @@ class pure_pursuit :
                     self.is_look_forward_point = True
                     break
         
+        #TODO: (4) Steering 각도 계산
+        if not self.is_look_forward_point or local_path_point is None:
+            return 0.0
         theta = atan2(local_path_point[1],local_path_point[0])
         steering = atan2((2*self.vehicle_length*sin(theta)),self.lfd)
 
@@ -179,6 +198,7 @@ class pidControl:
     def pid(self,target_vel, current_vel):
         error = target_vel - current_vel
 
+        #TODO: (5) PID 제어 생성
         p_control = self.p_gain * error
         self.i_control += self.i_gain * error * self.controlTime
         d_control = self.d_gain * (error-self.prev_error) / self.controlTime
@@ -208,6 +228,7 @@ class velocityPlanning:
                 x_list.append([-2*x, -2*y ,1])
                 y_list.append((-x*x) - (y*y))
 
+            #TODO: (6) 도로의 곡률 계산
             x_matrix = np.array(x_list)
             y_matrix = np.array(y_list)
             x_trans = x_matrix.T
@@ -218,6 +239,7 @@ class velocityPlanning:
             c = a_matrix[2]
             r = sqrt(a*a+b*b-c)
 
+            #TODO: (7) 곡률 기반 속도 계획
             v_max = sqrt(r*9.8*self.road_friction)
 
             if v_max > self.car_max_speed:

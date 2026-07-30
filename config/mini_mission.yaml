@@ -1,0 +1,15 @@
+# Tune these values after checking the supplied scenario and global path in RViz.
+cruise_speed_kph: 30.0
+yellow_go_distance_m: 8.0
+slowdown_distance_m: 35.0
+stop_margin_m: 2.5
+signal_timeout_sec: 1.0
+object_stop_distance_m: 12.0
+object_lateral_margin_m: 1.8
+finish_slowdown_distance_m: 15.0
+
+# Example:
+# stop_lines:
+#   - {signal_id: "C119BS010001", waypoint: 420, maneuver: straight}
+#   - {signal_id: "C119BS010002", waypoint: 815, maneuver: left}
+stop_lines: []
